@@ -14,50 +14,56 @@ import (
 )
 
 const (
-	daysToShow    = 3
+	daysToShow    = 10
 	cacheDuration = 10 * time.Hour
 	tvmatchenUrl  = "http://www.tvmatchen.nu/"
 )
 
 var (
 	multipleSpaces = regexp.MustCompile(`\s+`)
-	leagues        = []string{"Premier League", "Ligue 1", "Championship", "Allsvenskan"}
-	schedule       map[string][]*match
-	initiated      bool
-	lastRefresh    time.Time
-	mu             sync.RWMutex
+	leagues        = []string{"Premier League" /*, "Ligue 1", "Championship", "Allsvenskan"*/}
+	months         = map[string]string{
+		"Monday":    "Måndag",
+		"Tuesday":   "Tisdag",
+		"Wednesday": "Onsdag",
+		"Thursday":  "Torsdag",
+		"Friday":    "Fredag",
+		"Saturday":  "Lördag",
+		"Sunday":    "Söndag",
+	}
+	schedule    map[string][]*match
+	lastRefresh time.Time
+	mu          sync.RWMutex
 )
 
 type (
 	match struct {
-		name    string
-		league  string
-		channel string
-		time    string
+		Name    string
+		League  string
+		Channel string
+		Time    string
+	}
+
+	templateData struct {
+		Schedule    map[string][]*match
+		LastRefresh string
 	}
 )
 
 // Convert a match to a pretty printable string.
 func (m *match) String() string {
-	return fmt.Sprintf("* %s %s (%s, %s)", m.time, m.name, m.league, m.channel)
+	return fmt.Sprintf("* %s %s (%s, %s)", m.Time, m.Name, m.League, m.Channel)
 }
 
 // Refresh data from TV-matchen.
 func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
-	fmt.Printf("Refreshing schedule..")
 	defer func() {
 		lastRefresh = time.Now()
-		initiated = true
 		mu.Unlock()
-		fmt.Println(".done")
 	}()
 
-	/*doc, err := goquery.NewDocument(tvmatchenUrl)
-	if err != nil {
-		panic(err)
-	}*/
-
+	// Fetch remote HTML
 	c := appengine.NewContext(r)
 	client := urlfetch.Client(c)
 	resp, err := client.Get(tvmatchenUrl)
@@ -66,13 +72,15 @@ func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dor, err := goquery.NewDocumentFromResponse(resp)
+	// Setup parser
+	doc, err := goquery.NewDocumentFromResponse(resp)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
 	schedule = make(map[string][]*match, daysToShow)
 
+	// Parse matches
 	days := doc.Find("h2.day-name")
 	days.Each(func(i int, s *goquery.Selection) {
 		if i >= daysToShow {
@@ -82,6 +90,9 @@ func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 		day := s.Find("span.day-name-inner")
 		date, _ := day.Attr("id")
 		date = strings.Replace(date, "match-day-", "", -1)
+
+		t, _ := time.Parse("2006-01-02", date)
+		date = t.Format("2006-01-02 - ") + months[t.Format("Monday")]
 
 		schedule[date] = []*match{}
 
@@ -118,18 +129,16 @@ func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 			time := ms.Find(".time .field-content").Text()
 
 			schedule[date] = append(schedule[date], &match{
-				name:    name,
-				league:  league,
-				channel: channel,
-				time:    time,
+				Name:    name,
+				League:  league,
+				Channel: channel,
+				Time:    time,
 			})
 		})
 	})
 }
 
 func init() {
-	initiated = false
-
 	t := template.New("t")
 	t, err := t.Parse(htmlTemplate)
 	if err != nil {
@@ -137,15 +146,13 @@ func init() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Printf("Incoming request..\n")
-
 		// Check if we should update schedule
-		elapsed := time.Since(lastRefresh)
-		if !initiated || elapsed > cacheDuration {
+		if elapsed := time.Since(lastRefresh); elapsed > cacheDuration {
 			refreshSchedule(w, r)
 		}
 
-		err = t.Execute(w, schedule)
+		templateData := &templateData{Schedule: schedule, LastRefresh: lastRefresh.Format(time.RFC3339)}
+		err = t.Execute(w, templateData)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
@@ -157,18 +164,68 @@ const (
 <html>
 	<head>
 		<title>Match på TV:n</title>
+	    <meta charset="utf-8" />
+	    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+		<link rel="icon" href="/favicon.ico" type="image/x-icon">
+	    <link href='http://fonts.googleapis.com/css?family=Open+Sans' rel='stylesheet' type='text/css'>
+	    <style type="text/css">
+	    	body {
+	    		background: #efefef;
+	    		color: #333333;
+	    		font-family: 'Open Sans', arial;
+	    	}
+
+	    	ul {
+	    		list-style: none;
+	    		margin: 0;
+	    		padding: 0;
+	    	}
+
+	    	h2 {
+	    		margin: 5px 0;
+	    	}
+
+	    	li {
+	    		font-size: 14px;
+	    		padding: 3px 0;
+	    	}
+
+	    	em {
+	    		font-size: 10px;
+	    	}
+
+    		.time {
+    			color: #c5752a;
+    		}
+
+    		.league-channel {
+    			color: #575e5b;
+    		}
+
+    		@media all and (max-width: 500px) {
+			  .league-channel {
+			  	display: block;
+			  }
+			}
+	    </style>
 	</head>
 	<body>
 		Fotboll på TV:n.
 		
-		{{range $day, $matches := .}}
+		{{range $day, $matches := .Schedule}}
 			<h2>{{ $day }}</h2>
 			<ul>
 				{{range $match := $matches}}
-					<li>{{$match.String}}</li>
+					<li>
+						<span class="time">{{$match.Time}}</span>
+						<span class="name">{{$match.Name}}</span>
+						<span class="league-channel">({{$match.League}}, {{$match.Channel}})</span>
+					</li>
 				{{end}}
 			</ul>
 		{{end}}
+
+		<em>Uppdaterad {{.LastRefresh}}</em>
 	</body>
 </html>
 `
