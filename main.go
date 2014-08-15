@@ -1,6 +1,8 @@
-package main
+package alexmatchen
 
 import (
+	"appengine"
+	"appengine/urlfetch"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"html/template"
@@ -21,6 +23,7 @@ var (
 	multipleSpaces = regexp.MustCompile(`\s+`)
 	leagues        = []string{"Premier League", "Ligue 1", "Championship", "Allsvenskan"}
 	schedule       map[string][]*match
+	initiated      bool
 	lastRefresh    time.Time
 	mu             sync.RWMutex
 )
@@ -40,18 +43,32 @@ func (m *match) String() string {
 }
 
 // Refresh data from TV-matchen.
-func refreshSchedule() {
+func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	fmt.Printf("Refreshing schedule..")
 	defer func() {
 		lastRefresh = time.Now()
+		initiated = true
 		mu.Unlock()
 		fmt.Println(".done")
 	}()
 
-	doc, err := goquery.NewDocument(tvmatchenUrl)
+	/*doc, err := goquery.NewDocument(tvmatchenUrl)
 	if err != nil {
 		panic(err)
+	}*/
+
+	c := appengine.NewContext(r)
+	client := urlfetch.Client(c)
+	resp, err := client.Get(tvmatchenUrl)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	dor, err := goquery.NewDocumentFromResponse(resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
 	schedule = make(map[string][]*match, daysToShow)
@@ -110,8 +127,8 @@ func refreshSchedule() {
 	})
 }
 
-func main() {
-	refreshSchedule()
+func init() {
+	initiated = false
 
 	t := template.New("t")
 	t, err := t.Parse(htmlTemplate)
@@ -124,21 +141,15 @@ func main() {
 
 		// Check if we should update schedule
 		elapsed := time.Since(lastRefresh)
-		if elapsed > cacheDuration {
-			refreshSchedule()
+		if !initiated || elapsed > cacheDuration {
+			refreshSchedule(w, r)
 		}
 
 		err = t.Execute(w, schedule)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
-
-	fmt.Printf("Server listening on :8080\n")
-	err = http.ListenAndServe(":8080", nil)
-	if err != nil {
-		panic(err)
-	}
 }
 
 const (
