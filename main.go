@@ -3,6 +3,7 @@ package alexmatchen
 import (
 	"appengine"
 	"appengine/urlfetch"
+	"encoding/json"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"html/template"
@@ -57,10 +58,12 @@ func (m *match) String() string {
 
 // Refresh data from TV-matchen.
 func refreshSchedule(w http.ResponseWriter, r *http.Request) {
+	fmt.Printf("Refreshing schedule..")
 	mu.Lock()
 	defer func() {
 		lastRefresh = time.Now()
 		mu.Unlock()
+		fmt.Println("..done")
 	}()
 
 	// Fetch remote HTML
@@ -138,6 +141,13 @@ func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Refreshes the schedule if the cache duration has expired.
+func refreshScheduleIfNeeded(w http.ResponseWriter, r *http.Request) {
+	if elapsed := time.Since(lastRefresh); elapsed > cacheDuration {
+		refreshSchedule(w, r)
+	}
+}
+
 func init() {
 	t := template.New("t")
 	t, err := t.Parse(htmlTemplate)
@@ -145,14 +155,25 @@ func init() {
 		panic(err)
 	}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Check if we should update schedule
-		if elapsed := time.Since(lastRefresh); elapsed > cacheDuration {
-			refreshSchedule(w, r)
+	http.HandleFunc("/schedule.json", func(w http.ResponseWriter, r *http.Request) {
+		refreshScheduleIfNeeded(w, r)
+
+		js, err := json.Marshal(schedule)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(js)
+	})
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		refreshScheduleIfNeeded(w, r)
 
 		templateData := &templateData{Schedule: schedule, LastRefresh: lastRefresh.Format(time.RFC3339)}
 		err = t.Execute(w, templateData)
+
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
