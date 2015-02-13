@@ -23,7 +23,7 @@ const (
 var (
 	multipleSpaces = regexp.MustCompile(`\s+`)
 	leagues        = []string{"Premier League" /*, "Ligue 1", "Championship", "Allsvenskan"*/}
-	months         = map[string]string{
+	dayNames         = map[string]string{
 		"Monday":    "Måndag",
 		"Tuesday":   "Tisdag",
 		"Wednesday": "Onsdag",
@@ -95,7 +95,7 @@ func refreshSchedule(w http.ResponseWriter, r *http.Request) {
 		date = strings.Replace(date, "match-day-", "", -1)
 
 		t, _ := time.Parse("2006-01-02", date)
-		date = t.Format("2006-01-02 - ") + months[t.Format("Monday")]
+		date = t.Format("2006-01-02 - ") + dayNames[t.Format("Monday")]
 
 		schedule[date] = []*match{}
 
